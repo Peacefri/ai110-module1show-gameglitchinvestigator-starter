@@ -93,7 +93,11 @@ if "secret" not in st.session_state:
     st.session_state.secret = random.randint(low, high)
 
 if "attempts" not in st.session_state:
-    st.session_state.attempts = 1
+    # BUG FIX (Bug 3b): attempts started at 1 before any guess was made, so
+    # "Attempts left" was always one short (e.g. Easy showed 5 instead of 6).
+    # CHANGED: start at 0 — no attempts have been used yet. This also matches
+    # the New Game handler, which already resets attempts to 0.
+    st.session_state.attempts = 0
 
 if "score" not in st.session_state:
     st.session_state.score = 0
@@ -107,7 +111,11 @@ if "history" not in st.session_state:
 st.subheader("Make a guess")
 
 st.info(
-    f"Guess a number between 1 and 100. "
+    # BUG FIX (Bug 3a): the range was hard-coded as "1 and 100", so every
+    # difficulty showed the same range on the main screen.
+    # CHANGED: use {low} and {high} (from get_range_for_difficulty) so the
+    # displayed range matches the selected difficulty (Easy 1-20, Hard 1-50).
+    f"Guess a number between {low} and {high}. "
     f"Attempts left: {attempt_limit - st.session_state.attempts}"
 )
 
@@ -131,9 +139,48 @@ with col2:
 with col3:
     show_hint = st.checkbox("Show hint", value=True)
 
+# BUG FIX (Bug 2): the "Show hint" checkbox did nothing on its own.
+# Previously `show_hint` was only used inside the `if submit:` block, so just
+# checking/unchecking the box (which triggers a rerun without a submit) showed
+# nothing. NEW: render a standalone hint here, outside of submit, so toggling
+# the checkbox always produces visible feedback.
+if show_hint:
+    attempts_left = attempt_limit - st.session_state.attempts
+    st.info(
+        f"💡 Hint: The secret is between {low} and {high}. "
+        f"You have {attempts_left} attempt(s) left."
+    )
+
 if new_game:
-    st.session_state.attempts = 0
-    st.session_state.secret = random.randint(1, 100)
+    # BUG FIX (Bug 1): "New Game" did not fully reset the game.
+    # Previously this block only reset `attempts` and `secret`, so after a
+    # win/loss the leftover state made the new game look frozen and kept the
+    # old score/history. We now reset every piece of game state.
+
+    st.session_state.attempts = 0  # unchanged: start fresh with 0 attempts used
+
+    # CHANGED: use the difficulty range (low/high) instead of hard-coded 1, 100
+    # so the new secret matches the selected difficulty (Easy 1-20, Hard 1-50).
+    st.session_state.secret = random.randint(low, high)
+
+    # NEW: reset status back to "playing". This is the key fix — without it,
+    # the status stayed "won"/"lost" and the check below called st.stop(),
+    # so the new game never actually started.
+    st.session_state.status = "playing"
+
+    # NEW: clear score and guess history so the old game doesn't carry over.
+    st.session_state.score = 0
+    st.session_state.history = []
+
+    # BUG FIX (Bug 1, follow-up): resetting session state alone was NOT enough.
+    # The guess text box is a keyed widget, so Streamlit kept its old value
+    # across the rerun — after "New Game" the previous guess (e.g. "42") still
+    # sat in the input, making the game look like it never reset. Deleting the
+    # widget's key here clears it; on the rerun the input is recreated empty.
+    input_key = f"guess_input_{difficulty}"
+    if input_key in st.session_state:
+        del st.session_state[input_key]
+
     st.success("New game started.")
     st.rerun()
 
@@ -155,15 +202,21 @@ if submit:
     else:
         st.session_state.history.append(guess_int)
 
-        if st.session_state.attempts % 2 == 0:
-            secret = str(st.session_state.secret)
-        else:
-            secret = st.session_state.secret
+        # BUG FIX (Bug 4b): on even attempts the secret was converted to a
+        # string, so check_guess compared int vs str, hit a TypeError, and fell
+        # back to comparing them LEXICALLY (e.g. "9" > "50" -> "Too High").
+        # That made the higher/lower feedback wrong every other turn.
+        # CHANGED: always compare against the real int secret.
+        secret = st.session_state.secret
 
         outcome, message = check_guess(guess_int, secret)
 
-        if show_hint:
-            st.warning(message)
+        # BUG FIX (Bug 4a): the higher/lower message is the core feedback that
+        # tells you which way to go, but it only showed when "Show hint" was
+        # checked. Unchecking the box left a submitted guess with no feedback at
+        # all. CHANGED: always show the directional result; the hint checkbox
+        # only controls the extra standalone hint above, not this message.
+        st.warning(message)
 
         st.session_state.score = update_score(
             current_score=st.session_state.score,
